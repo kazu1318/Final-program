@@ -2,6 +2,9 @@ import React, { useState, useEffect } from "react";
 import { Calendar, momentLocalizer, Views } from "react-big-calendar";
 import moment from "moment";
 import "react-big-calendar/lib/css/react-big-calendar.css";
+import { auth, db } from "./firebaseConfig";
+import { addClass, getClasses, addTask, getTasks } from "./DataService";
+import { onAuthStateChanged } from "firebase/auth";
 
 const localizer = momentLocalizer(moment);
 
@@ -10,7 +13,34 @@ const CalendarPage = () => {
   const [newTask, setNewTask] = useState({ title: "", date: "", className: "" });
   const [classes, setClasses] = useState([]);
   const [newClass, setNewClass] = useState({ name: "", priority: 1 });
-  const [editClass, setEditClass] = useState({ name: "", priority: 1, index: -1 });
+  const [user, setUser] = useState(null);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        setUser(user);
+        loadUserData(user.uid);
+      } else {
+        setUser(null);
+        setClasses([]);
+        setEvents([]);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const loadUserData = async (userId) => {
+    const userClasses = await getClasses(userId);
+    setClasses(userClasses);
+    const userTasks = await getTasks(userId);
+    const formattedTasks = userTasks.map(task => ({
+      ...task,
+      start: task.start.toDate(),
+      end: task.end.toDate()
+    }));
+    setEvents(formattedTasks);
+  };
 
   useEffect(() => {
     if (classes.length > 0) {
@@ -18,20 +48,15 @@ const CalendarPage = () => {
     }
   }, [classes]);
 
-  const handleClassSubmit = (event) => {
+  const handleClassSubmit = async (event) => {
     event.preventDefault();
-    if (editClass.index >= 0) {
-      const updatedClasses = [...classes];
-      updatedClasses[editClass.index] = { name: editClass.name, priority: editClass.priority };
-      setClasses(updatedClasses);
-      setEditClass({ name: "", priority: 1, index: -1 });
-    } else {
-      setClasses([...classes, newClass]);
-      setNewClass({ name: "", priority: 1 });
-    }
+    const newClassData = { name: newClass.name, priority: newClass.priority };
+    const docRef = await addClass(user.uid, newClassData);
+    setClasses([...classes, { ...newClassData, id: docRef.id }]);
+    setNewClass({ name: "", priority: 1 });
   };
 
-  const handleTaskSubmit = (event) => {
+  const handleTaskSubmit = async (event) => {
     event.preventDefault();
     const classData = classes.find(cls => cls.name === newTask.className);
     if (!classData) {
@@ -59,8 +84,13 @@ const CalendarPage = () => {
       color: getColor(classData.priority * daysUntilDue)
     };
 
-    setEvents([...events, task]);
-    setNewTask({ title: "", date: "", className: "" });
+    try {
+      await addTask(user.uid, task);
+      setEvents([...events, task]);
+      setNewTask({ title: "", date: "", className: "" });
+    } catch (error) {
+      console.error("課題の追加に失敗しました", error);
+    }
   };
 
   const updateTaskPriorities = (updatedClasses) => {
@@ -96,10 +126,6 @@ const CalendarPage = () => {
     return { style };
   };
 
-  const handleEditClass = (index) => {
-    setEditClass({ ...classes[index], index });
-  };
-
   const getAgendaContent = (event) => `${event.title}`;
 
   return (
@@ -111,16 +137,16 @@ const CalendarPage = () => {
         <input
           type="text"
           placeholder="授業名"
-          value={editClass.index >= 0 ? editClass.name : newClass.name}
-          onChange={(e) => editClass.index >= 0 ? setEditClass({ ...editClass, name: e.target.value }) : setNewClass({ ...newClass, name: e.target.value })}
+          value={newClass.name}
+          onChange={(e) => setNewClass({ ...newClass, name: e.target.value })}
         />
         <input
           type="number"
           placeholder="優先順位"
-          value={editClass.index >= 0 ? editClass.priority : newClass.priority}
-          onChange={(e) => editClass.index >= 0 ? setEditClass({ ...editClass, priority: e.target.value }) : setNewClass({ ...newClass, priority: e.target.value })}
+          value={newClass.priority}
+          onChange={(e) => setNewClass({ ...newClass, priority: e.target.value })}
         />
-        <button type="submit">{editClass.index >= 0 ? "授業を更新" : "授業追加"}</button>
+        <button type="submit">授業追加</button>
       </form>
 
       <h2>授業の一覧</h2>
@@ -128,7 +154,6 @@ const CalendarPage = () => {
         {classes.map((cls, index) => (
           <li key={index}>
             {cls.name} - 優先順位: {cls.priority}
-            <button onClick={() => handleEditClass(index)}>編集</button>
           </li>
         ))}
       </ul>
